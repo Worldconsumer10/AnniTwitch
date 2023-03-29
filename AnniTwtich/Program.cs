@@ -7,13 +7,14 @@ using System.Text.Json;
 using TwitchLib.Client.Events;
 using TwitchLib.Client.Interfaces;
 using Anni.Modules;
+using Anni.Modules.Database;
 
 namespace Anni
 {
     public class Program
     {
         public static Config _config;
-        static ChannelBot[] _botlist;
+        public static ChannelBot[] _botlist;
         public static Task Main(string[] arg)
         {
             _config = JsonSerializer.Deserialize<Config>(File.ReadAllText("config.json")) ?? new Config();
@@ -47,13 +48,15 @@ namespace Anni
         public string username { get; set; } = "Anni";
         public string token { get; set; } = "none";
         public string[] channels { get; set; } = new string[] {"DummyThiccBanana"};
+        public string connectionString { get; set; } = "mongodb://192.168.20.34:27017/";
+        public string databaseName { get; set; } = "AnniTwitch-DB";
     }
 
     public class ChannelBot : TwitchClient
     {
         public readonly ITwitchClient _client;
         public readonly string _channel;
-
+        public List<string> users { get; set; } = new List<string>();
         public ChannelBot(ConnectionCredentials credentials,string channel)
         {
             _channel = channel;
@@ -70,6 +73,9 @@ namespace Anni
 
             _client = client;
             _client.Initialize(credentials, channel);
+            _client.OnExistingUsersDetected += OnExistingUserDetected;
+            _client.OnUserJoined += OnUserJoined;
+            _client.OnUserLeft += OnUserLeft;
             _client.OnConnected += ClientConnected;
             _client.OnDisconnected += ClientDisconnected;
             _client.OnReconnected += ClientReconnected;
@@ -78,6 +84,25 @@ namespace Anni
             //_client.OnLog += OnLog;
             // Register event handlers for chat events
         }
+
+        private void OnUserLeft(object? sender, OnUserLeftArgs e)
+        {
+            if (users.Contains(e.Username)) users.Remove(e.Username);
+        }
+
+        private void OnUserJoined(object? sender, OnUserJoinedArgs e)
+        {
+            if (!users.Contains(e.Username)) users.Add(e.Username);
+        }
+
+        private void OnExistingUserDetected(object? sender, OnExistingUsersDetectedArgs e)
+        {
+            foreach (string user in e.Users)
+            {
+                if (!users.Contains(user)) users.Add(user);
+            }
+        }
+
         private void OnWhisper(object? sender, OnWhisperReceivedArgs e)
         {
             _client.SendWhisper(e.WhisperMessage.DisplayName, "Speak Louder.");
@@ -109,6 +134,29 @@ namespace Anni
             Console.WriteLine($"[Channel: {_channel}] Connected!");
             _client.OnMessageReceived += OnMessageRecieved;
             _client.OnWhisperReceived += OnWhisper;
+            _ = Task.Run(async () =>
+            {
+                foreach (ChannelEntry entry in await ChannelEntry.GetAll())
+                {
+                    if (entry == null) continue;
+                    ManageChannel(entry);
+                }
+            });
+        }
+        public void ManageChannel(ChannelEntry? entry)
+        {
+            _ = Task.Run(async () =>
+            {
+                while (true)
+                {
+                    if (entry == null) continue;
+                    if (entry.message == null) continue;
+                    SendMessage(entry.message.text);
+                    await Task.Delay(entry.message.duration * 1000);
+                    entry = await ChannelEntry.Get(entry.ChannelId);
+                    if (entry == null) break;
+                }
+            });
         }
         public void SendMessage(string message)
         {
